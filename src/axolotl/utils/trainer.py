@@ -734,7 +734,7 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
     elif cfg.relora_steps:
         trainer_cls = ReLoRATrainer
     
-    acc_metric = evaluate.load_metric("accuracy")
+    acc_metric = evaluate.load("accuracy")
     compute_metrics = lambda eval_pred: acc_metric.compute(predictions=eval_pred.predictions, references=eval_pred.label_ids)
     trainer = trainer_cls(
         model=model,
