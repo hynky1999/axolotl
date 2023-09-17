@@ -2,6 +2,18 @@
 
 Axolotl is a tool designed to streamline the fine-tuning of various AI models, offering support for multiple configurations and architectures.
 
+Features:
+- Train various Huggingface models such as llama, pythia, falcon, mpt
+- Supports fullfinetune, lora, qlora, relora, and gptq
+- Customize configurations using a simple yaml file or CLI overwrite
+- Load different dataset formats, use custom formats, or bring your own tokenized datasets
+- Integrated with xformer, flash attention, rope scaling, and multipacking
+- Works with single GPU or multiple GPUs via FSDP or Deepspeed
+- Easily run with Docker locally or on the cloud
+- Log results and optionally checkpoints to wandb
+- And more!
+
+
 <table>
 <tr>
 <td>
@@ -51,14 +63,16 @@ Axolotl is a tool designed to streamline the fine-tuning of various AI models, o
 ## Axolotl supports
 
 |          | fp16/fp32 | lora | qlora | gptq | gptq w/flash attn | flash attn | xformers attn |
-|----------|:----------|:-----|-------|------|-------------------|------------|---------------|
-| llama    | ✅         | ✅    | ✅     | ✅             | ✅                 | ✅          | ✅             |
-| Pythia   | ✅         | ✅    | ✅     | ❌             | ❌                 | ❌          | ❓             |
-| cerebras | ✅         | ✅    | ✅     | ❌             | ❌                 | ❌          | ❓             |
-| mpt      | ✅         | ❌    | ❓     | ❌             | ❌                 | ❌          | ❓             |
-| falcon   | ✅         | ✅    | ✅     | ❌             | ❌                 | ❌          | ❓             |
-| gpt-j    | ✅         | ✅    | ✅     | ❌             | ❌                 | ❓          | ❓             |
-| XGen     | ✅         | ❓    | ✅     | ❓             | ❓                 | ❓          | ✅             |
+|----------|:----------|:-----|-------|------|-------------------|------------|--------------|
+| llama    | ✅         | ✅    | ✅     | ✅             | ✅                 | ✅          | ✅            |
+| Pythia   | ✅         | ✅    | ✅     | ❌             | ❌                 | ❌          | ❓            |
+| cerebras | ✅         | ✅    | ✅     | ❌             | ❌                 | ❌          | ❓            |
+| btlm     | ✅         | ✅    | ✅     | ❌             | ❌                 | ❌          | ❓            |
+| mpt      | ✅         | ❌    | ❓     | ❌             | ❌                 | ❌          | ❓            |
+| falcon   | ✅         | ✅    | ✅     | ❌             | ❌                 | ❌          | ❓            |
+| gpt-j    | ✅         | ✅    | ✅     | ❌             | ❌                 | ❓          | ❓            |
+| XGen     | ✅         | ❓    | ✅     | ❓             | ❓                 | ❓          | ✅            |
+| phi      | ✅         | ✅    | ✅     | ❓             | ❓                 | ❓          | ❓            |
 
 
 ## Quickstart ⚡
@@ -71,15 +85,16 @@ Get started with Axolotl in just a few steps! This quickstart guide will walk yo
 git clone https://github.com/OpenAccess-AI-Collective/axolotl
 cd axolotl
 
+pip3 install packaging
 pip3 install -e .[flash-attn]
 pip3 install -U git+https://github.com/huggingface/peft.git
 
 # finetune lora
-accelerate launch scripts/finetune.py examples/openllama-3b/lora.yml
+accelerate launch -m axolotl.cli.train examples/openllama-3b/lora.yml
 
 # inference
-accelerate launch scripts/finetune.py examples/openllama-3b/lora.yml \
-    --inference --lora_model_dir="./lora-out"
+accelerate launch -m axolotl.cli.inference examples/openllama-3b/lora.yml \
+    --lora_model_dir="./lora-out"
 ```
 
 ## Installation
@@ -105,6 +120,7 @@ accelerate launch scripts/finetune.py examples/openllama-3b/lora.yml \
 
   3. Install axolotl along with python dependencies
         ```bash
+        pip3 install packaging
         pip3 install -e .[flash-attn]
         ```
 
@@ -140,7 +156,8 @@ accelerate launch scripts/finetune.py examples/openllama-3b/lora.yml \
   git clone https://github.com/OpenAccess-AI-Collective/axolotl
   cd axolotl
 
-  pip3 install -e .
+  pip3 install packaging
+  pip3 install -e .[flash-attn]
   pip3 install protobuf==3.20.3
   pip3 install -U --ignore-installed requests Pillow psutil scipy
   ```
@@ -317,6 +334,7 @@ See [examples](examples) for quick start. It is recommended to duplicate and mod
     - path: EleutherAI/pile
       name: enron_emails
       type: completion # format from earlier
+      field: text # Optional[str] default: text, field to use for completion data
 
   # huggingface repo with multiple named configurations/subsets
   datasets:
@@ -439,6 +457,9 @@ datasets:
       # 'no_input_format' cannot include {input}
       no_input_format: "{instruction} "
 
+      # for completions datsets, uses the provided field if not `text`
+      field:
+
 # axolotl attempts to save the dataset as an arrow after packing the data together so
 # subsequent training attempts load faster, relative path
 dataset_prepared_path: data/last_run_prepared
@@ -516,6 +537,10 @@ wandb_log_model: # "checkpoint" to log model to wandb Artifacts every `save_step
 # where to save the finished model to
 output_dir: ./completed-model
 
+# whether to use torch.compile and which backend to use
+torch_compile:  # bool
+torch_compile_backend:  # Optional[str]
+
 # training hyperparameters
 gradient_accumulation_steps: 1
 micro_batch_size: 2
@@ -530,6 +555,9 @@ save_steps: # leave empty to save at each epoch
 eval_steps: # leave empty to eval at each epoch
 save_total_limit: # checkpoints saved at a time
 max_steps:
+
+eval_table_size: # approximate number of predictions sent to wandb depending on batch size. Enabled above 0. Default is 0
+eval_table_max_new_tokens: # total number of tokens generated for predictions sent to wandb. Default is 128
 
 # save model as safetensors (require safetensors package)
 save_safetensors:
@@ -560,6 +588,30 @@ log_sweep_min_lr:
 log_sweep_max_lr:
 
 # specify optimizer
+# Valid values are driven by the Transformers OptimizerNames class, see:
+# https://github.com/huggingface/transformers/blob/95b374952dc27d8511541d6f5a4e22c9ec11fb24/src/transformers/training_args.py#L134
+#
+# Note that not all optimizers may be available in your environment, ex: 'adamw_anyprecision' is part of
+# torchdistx, 'adamw_bnb_8bit' is part of bnb.optim.Adam8bit, etc. When in doubt, it is recommended to start with the optimizer used
+# in the examples/ for your model and fine-tuning use case.
+#
+# Valid values for 'optimizer' include:
+# - adamw_hf
+# - adamw_torch
+# - adamw_torch_fused
+# - adamw_torch_xla
+# - adamw_apex_fused
+# - adafactor
+# - adamw_anyprecision
+# - sgd
+# - adagrad
+# - adamw_bnb_8bit
+# - lion_8bit
+# - lion_32bit
+# - paged_adamw_32bit
+# - paged_adamw_8bit
+# - paged_lion_32bit
+# - paged_lion_8bit
 optimizer:
 # specify weight decay
 weight_decay:
@@ -640,14 +692,14 @@ strict:
 
 Run
 ```bash
-accelerate launch scripts/finetune.py your_config.yml
+accelerate launch -m axolotl.cli.train your_config.yml
 ```
 
 #### Multi-GPU
 
 You can optionally pre-tokenize dataset with the following before finetuning:
 ```bash
-CUDA_VISIBLE_DEVICES="" accelerate ... --prepare_ds_only
+CUDA_VISIBLE_DEVICES="" accelerate launch -m axolotl.cli.train your_config.yml --prepare_ds_only
 ```
 
 ##### Config
@@ -686,16 +738,16 @@ Pass the appropriate flag to the train command:
 
 - Pretrained LORA:
   ```bash
-  --inference --lora_model_dir="./lora-output-dir"
+  python -m axolotl.cli.inference examples/your_config.yml --lora_model_dir="./lora-output-dir"
   ```
 - Full weights finetune:
   ```bash
-  --inference --base_model="./completed-model"
+  python -m axolotl.cli.inference examples/your_config.yml --base_model="./completed-model"
   ```
 - Full weights finetune w/ a prompt from a text file:
   ```bash
-  cat /tmp/prompt.txt | python scripts/finetune.py configs/your_config.yml \
-    --base_model="./completed-model" --inference --prompter=None --load_in_8bit=True
+  cat /tmp/prompt.txt | python -m axolotl.cli.inference examples/your_config.yml \
+    --base_model="./completed-model" --prompter=None --load_in_8bit=True
   ```
 
 ### Merge LORA to base
@@ -703,13 +755,13 @@ Pass the appropriate flag to the train command:
 Add below flag to train command above
 
 ```bash
---merge_lora --lora_model_dir="./completed-model" --load_in_8bit=False --load_in_4bit=False
+python3 -m axolotl.cli.merge_lora examples/your_config.yml --lora_model_dir="./completed-model" --load_in_8bit=False --load_in_4bit=False
 ```
 
 If you run out of CUDA memory, you can try to merge in system RAM with
 
 ```bash
-CUDA_VISIBLE_DEVICES="" python3 scripts/finetune.py ...
+CUDA_VISIBLE_DEVICES="" python3 -m axolotl.cli.merge_lora ...
 ```
 
 ## Common Errors 🧰

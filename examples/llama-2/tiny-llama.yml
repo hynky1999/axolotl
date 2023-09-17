@@ -1,7 +1,8 @@
-base_model: codellama/CodeLlama-13b-hf
-base_model_config: codellama/CodeLlama-13b-hf
+base_model: PY007/TinyLlama-1.1B-step-50K-105b
+base_model_config: PY007/TinyLlama-1.1B-step-50K-105b
+
 model_type: LlamaForCausalLM
-tokenizer_type: CodeLlamaTokenizer
+tokenizer_type: LlamaTokenizer
 is_llama_derived_model: true
 
 load_in_8bit: true
@@ -17,7 +18,6 @@ output_dir: ./lora-out
 
 sequence_len: 4096
 sample_packing: true
-pad_to_sequence_len: true
 
 adapter: lora
 lora_model_dir:
@@ -56,6 +56,7 @@ flash_attention: true
 
 warmup_steps: 10
 eval_steps: 20
+eval_table_size: 5
 save_steps:
 debug:
 deepspeed:

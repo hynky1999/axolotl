@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
+import torch
 import torch.cuda
 import transformers
 from datasets import Dataset, set_caching_enabled
@@ -30,6 +31,7 @@ from axolotl.utils.callbacks import (
     SaveBetterTransformerModelCallback,
     SavePeftModelCallback,
     bench_eval_callback_factory,
+    log_prediction_callback_factory,
 )
 from axolotl.utils.collators import DataCollatorForSeq2Seq
 from axolotl.utils.dataloader import MultipackDistributedDataloader
@@ -114,6 +116,10 @@ class AxolotlTrainingArguments(TrainingArguments):
     sample_packing: bool = field(
         default=False,
         metadata={"help": "Use sample packing for efficient training."},
+    )
+    eval_sample_packing: Optional[bool] = field(
+        default=None,
+        metadata={"help": "Use sample packing for efficient evals."},
     )
     sample_packing_efficiency: float = field(
         default=1.0,
@@ -210,7 +216,11 @@ class AxolotlTrainer(Trainer):
     def _get_eval_sampler(
         self, eval_dataset: Dataset
     ) -> Optional[torch.utils.data.Sampler]:
-        if self.args.world_size > 1 and self.args.sample_packing:
+        if (
+            self.args.world_size > 1
+            and self.args.sample_packing
+            and self.args.eval_sample_packing is not False
+        ):
             return SequentialDistributedSampler(
                 eval_dataset,
                 num_replicas=self.args.world_size,
@@ -239,7 +249,7 @@ class AxolotlTrainer(Trainer):
     def get_eval_dataloader(
         self, eval_dataset: Optional[Dataset] = None
     ) -> Union[DataLoader, MultipackDistributedDataloader]:
-        if self.args.sample_packing:
+        if self.args.sample_packing and self.args.eval_sample_packing is not False:
             eval_dataset = (
                 eval_dataset if eval_dataset is not None else self.eval_dataset
             )
@@ -357,7 +367,14 @@ class ReLoRATrainer(AxolotlTrainer):
 
 
 def add_position_ids(sample):
+    sample_len = len(sample["input_ids"])
     sample["position_ids"] = torch.arange(len(sample["input_ids"]))
+    sample["length"] = sample_len
+    return sample
+
+
+def add_length(sample):
+    sample["length"] = len(sample["input_ids"])
     return sample
 
 
@@ -381,12 +398,16 @@ def process_datasets_for_packing(cfg, train_dataset, eval_dataset):
         if eval_dataset:
             eval_dataset = eval_dataset.filter(drop_long, num_proc=os.cpu_count())
 
+        if cfg.group_by_length:
+            train_dataset = train_dataset.map(add_length, num_proc=os.cpu_count())
+
         if cfg.sample_packing:
             train_dataset = train_dataset.map(add_position_ids, num_proc=os.cpu_count())
-            if eval_dataset:
-                eval_dataset = eval_dataset.map(
-                    add_position_ids, num_proc=os.cpu_count()
-                )
+            if cfg.eval_sample_packing is not False:
+                if eval_dataset:
+                    eval_dataset = eval_dataset.map(
+                        add_position_ids, num_proc=os.cpu_count()
+                    )
     return train_dataset, eval_dataset
 
 
@@ -556,21 +577,33 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
             "sample_packing_efficiency"
         ] = cfg.sample_packing_eff_est
 
-    if cfg.val_set_size == 0:
+    if cfg.eval_steps and cfg.evaluation_strategy:
+        # assume if the user set both, they know what they're doing
+        training_arguments_kwargs["evaluation_strategy"] = cfg.evaluation_strategy
+        training_arguments_kwargs["eval_steps"] = cfg.eval_steps
+    elif cfg.val_set_size == 0:
+        # no eval set, so don't eval
         training_arguments_kwargs["evaluation_strategy"] = "no"
+    elif cfg.evaluation_strategy and cfg.evaluation_strategy in ["epoch", "no"]:
+        # if explicitly set for epoch, just set, and eval steps don't matter
+        training_arguments_kwargs["evaluation_strategy"] = cfg.evaluation_strategy
     elif cfg.eval_steps:
+        # steps isn't used w/ epochs
         training_arguments_kwargs["evaluation_strategy"] = "steps"
         training_arguments_kwargs["eval_steps"] = cfg.eval_steps
     else:
-        # we have an eval set, but no steps defined, use epoch
+        # we have an eval set, but no steps defined, default to use epoch
         training_arguments_kwargs["evaluation_strategy"] = "epoch"
 
-    if cfg.save_strategy:
+    if cfg.save_steps:
+        # save_steps implies save_strategy of steps
+        training_arguments_kwargs["save_strategy"] = "steps"
+        training_arguments_kwargs["save_steps"] = cfg.save_steps
+    elif cfg.save_strategy:
         training_arguments_kwargs["save_strategy"] = cfg.save_strategy
     else:
-        training_arguments_kwargs["save_strategy"] = (
-            "steps" if cfg.save_steps else "epoch"
-        )
+        # default to saving each epoch if not defined
+        training_arguments_kwargs["save_strategy"] = "epoch"
 
     if cfg.do_bench_eval:
         training_arguments_kwargs["do_bench_eval"] = cfg.do_bench_eval
@@ -580,6 +613,21 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         training_arguments_kwargs["metric_for_best_model"] = cfg.metric_for_best_model
     if cfg.greater_is_better:
         training_arguments_kwargs["greater_is_better"] = cfg.greater_is_better
+
+    if cfg.torch_compile:
+        if torch.__version__ < "2.1.0":  # pylint: disable=protected-access
+            LOG.warning("torch>=2.1.0 required for torch_compile to work properly")
+        else:
+            import torch._dynamo  # pylint: disable=redefined-outer-name
+
+            torch._dynamo.config.suppress_errors = (  # pylint: disable=protected-access
+                True
+            )
+            training_arguments_kwargs["torch_compile"] = cfg.torch_compile
+            if cfg.torch_compile_backend:
+                training_arguments_kwargs[
+                    "torch_compile_backend"
+                ] = cfg.torch_compile_backend
 
     # DDP Config
     if cfg.ddp_timeout:
@@ -601,7 +649,6 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         eval_accumulation_steps=cfg.gradient_accumulation_steps,
         num_train_epochs=cfg.num_epochs,
         learning_rate=cfg.learning_rate,
-        save_steps=cfg.save_steps,
         output_dir=cfg.output_dir,
         save_total_limit=cfg.save_total_limit if cfg.save_total_limit else 4,
         load_best_model_at_end=(
@@ -621,6 +668,7 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         else "cosine",
         weight_decay=cfg.weight_decay if cfg.weight_decay is not None else 0.0,
         sample_packing=cfg.sample_packing if cfg.sample_packing else False,
+        eval_sample_packing=cfg.eval_sample_packing,
         sample_packing_seq_len_multiplier=cfg.micro_batch_size,
         relora_steps=cfg.relora_steps,
         relora_warmup_steps=cfg.relora_warmup_steps,
@@ -702,6 +750,10 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         callbacks=callbacks,
         **trainer_kwargs,
     )
+
+    if cfg.use_wandb and cfg.eval_table_size > 0:
+        LogPredictionCallback = log_prediction_callback_factory(trainer, tokenizer)
+        trainer.add_callback(LogPredictionCallback(cfg))
 
     if cfg.do_bench_eval:
         trainer.add_callback(bench_eval_callback_factory(trainer, tokenizer))

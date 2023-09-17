@@ -80,10 +80,6 @@ def train(
 
     model.config.use_cache = False
 
-    if torch.__version__ >= "2" and sys.platform != "win32":
-        LOG.info("Compiling torch model")
-        model = torch.compile(model)
-
     # go ahead and presave, so we have the adapter config available to inspect
     if peft_config:
         LOG.info(f"Pre-saving adapter config to {cfg.output_dir}")
@@ -120,6 +116,10 @@ def train(
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     LOG.info(f"Training Completed!!! Saving pre-trained model to {cfg.output_dir}")
+
+    if trainer.is_fsdp_enabled:
+        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+        LOG.info("Set FSDP state dict type to FULL_STATE_DICT for saving.")
 
     if cfg.relora_steps:
         if cfg.adapter == "lora" and not (cfg.load_in_4bit or cfg.load_in_8bit):

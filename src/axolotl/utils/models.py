@@ -1,6 +1,5 @@
 """Module for models and model loading"""
-
-
+import importlib
 import logging
 import math
 import os
@@ -155,11 +154,26 @@ def load_model(
         LOG.info("patching _expand_mask")
         hijack_expand_mask()
 
+    model_config = load_model_config(cfg)
+
+    # special handling b/c remote MixFormers code doesn't have _no_split_modules set
+    if (
+        "MixFormerSequentialConfig" in model_config.__class__.__name__
+        and cfg.model_type == "AutoModelForCausalLM"
+    ):
+        module_name = model_config.__class__.__module__.replace(
+            ".configuration_mixformer_sequential", ".modeling_mixformer_sequential"
+        )
+        modeling_phi = importlib.import_module(module_name)
+        # pylint:disable=protected-access
+        modeling_phi.MixFormerSequentialForCausalLM._no_split_modules = [
+            "ParallelBlock"
+        ]
+
     model_kwargs = {}
     if cfg.model_revision:
         model_kwargs["revision"] = cfg.model_revision
     if cfg.gptq:
-        model_config = load_model_config(cfg)
         if not hasattr(model_config, "quantization_config"):
             LOG.warning("model config does not contain quantization_config information")
         else:
@@ -221,6 +235,17 @@ def load_model(
         #         device=cfg.device,
         #     )
         #     model.train() # sets to train instead of eval mode
+        elif model_type == "MixFormerSequentialForCausalLM":
+            from axolotl.models.phi import MixFormerSequentialForCausalLM
+
+            model = MixFormerSequentialForCausalLM.from_pretrained(
+                base_model,
+                device_map=cfg.device_map,
+                load_in_8bit=cfg.load_in_8bit and cfg.adapter is not None,
+                load_in_4bit=cfg.load_in_4bit and cfg.adapter is not None,
+                torch_dtype=cfg.torch_dtype,
+                **model_kwargs,
+            )
         elif model_type and not cfg.trust_remote_code:
             if cfg.gptq:
                 model = AutoModelForCausalLM.from_pretrained(
@@ -291,15 +316,18 @@ def load_model(
         if cfg.resize_token_embeddings_to_32x
         else len(tokenizer)
     )
-    model.resize_token_embeddings(embeddings_len)
+    if model.get_input_embeddings().num_embeddings < embeddings_len:
+        model.resize_token_embeddings(embeddings_len)
+    else:
+        model.tie_weights()
 
     if (
         hasattr(model.config, "max_position_embeddings")
         and model.config.max_position_embeddings
-        and cfg.sequence_len >= model.config.max_position_embeddings
+        and cfg.sequence_len > model.config.max_position_embeddings
     ):
         LOG.warning(
-            f"increasing model.config.max_position_embeddings to {cfg.sequence_len}"
+            f"increasing model.config.max_position_embeddings from {model.config.max_position_embeddings} to {cfg.sequence_len}"
         )
         model.config.max_position_embeddings = cfg.sequence_len
 

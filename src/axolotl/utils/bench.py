@@ -2,6 +2,7 @@
 
 import pynvml
 import torch
+from pynvml.nvml import NVMLError
 
 
 def gpu_memory_usage(device=0):
@@ -20,15 +21,17 @@ def gpu_memory_usage_smi(device=0):
         device = device.index
     if isinstance(device, str) and device.startswith("cuda:"):
         device = int(device[5:])
-
-    pynvml.nvmlInit()
-    handle = pynvml.nvmlDeviceGetHandleByIndex(device)
-    info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-    return info.used / 1024.0**3
+    try:
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(device)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        return info.used / 1024.0**3
+    except NVMLError:
+        return 0.0
 
 
 def log_gpu_memory_usage(log, msg, device):
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or device == "auto":
         return (0, 0, 0)
 
     usage, cache, misc = gpu_memory_usage_all(device)
