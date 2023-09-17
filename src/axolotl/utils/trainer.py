@@ -1,5 +1,6 @@
 """Module containing the Trainer class and related functions"""
 import importlib
+import evaluate
 import logging
 import math
 import os
@@ -732,10 +733,14 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         trainer_cls = OneCycleLRSchedulerTrainer
     elif cfg.relora_steps:
         trainer_cls = ReLoRATrainer
+    
+    acc_metric = evaluate.load_metric("accuracy")
+    compute_metrics = lambda eval_pred: acc_metric.compute(predictions=eval_pred.predictions, references=eval_pred.label_ids)
     trainer = trainer_cls(
         model=model,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
+        compute_metrics=compute_metrics,
         args=training_args,
         data_collator=DataCollatorForSeq2Seq(
             tokenizer,
