@@ -17,6 +17,7 @@ from art import text2art
 from transformers import GenerationConfig, TextStreamer
 
 from axolotl.common.cli import TrainerCliArgs, load_model_and_tokenizer
+from fastchat.model.model_adapter import get_conversation_template
 from axolotl.logging_config import configure_logging
 from axolotl.train import TrainDatasetMeta
 from axolotl.utils.config import normalize_config, validate_config
@@ -93,11 +94,17 @@ def do_inference(
             tokenizer.add_special_tokens({token: symbol})
 
     prompter_module = None
-    if prompter:
-        prompter_module = getattr(
-            importlib.import_module("axolotl.prompters"), prompter
-        )
+    if not prompter:
+        raise ValueError("Must specify a prompter")
 
+    
+    
+
+    # prompter_module = getattr(
+    #     importlib.import_module("axolotl.prompters"), prompter
+    # )
+
+    prompter_module = get_conversation_template("vicuna")
     if cfg.landmark_attention:
         from axolotl.monkeypatch.llama_landmark_attn import set_model_mem_id
 
@@ -107,6 +114,7 @@ def do_inference(
         )
 
     model = model.to(cfg.device)
+    conv = prompter_module
 
     while True:
         print("=" * 80)
@@ -114,12 +122,9 @@ def do_inference(
         instruction = get_multi_line_input()
         if not instruction:
             return
-        if prompter_module:
-            prompt: str = next(
-                prompter_module().build_prompt(instruction=instruction.strip("\n"))
-            )
-        else:
-            prompt = instruction.strip()
+        conv.append_message(conv.roles[0], instruction.strip("\n"))
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
         batch = tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
 
         print("=" * 40)
@@ -148,7 +153,9 @@ def do_inference(
                 streamer=streamer,
             )
         print("=" * 40)
-        print(tokenizer.decode(generated["sequences"].cpu().tolist()[0]))
+        result = tokenizer.decode(generated["sequences"].cpu().tolist()[0])
+        print(result)
+        conv.update_last_message(result)
 
 
 def choose_config(path: Path):

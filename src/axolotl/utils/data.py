@@ -4,6 +4,7 @@ import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
+from fastchat.model.model_adapter import get_conversation_template
 
 import torch
 from datasets import (
@@ -18,6 +19,7 @@ from transformers import PreTrainedTokenizerBase
 
 from axolotl.datasets import ConstantLengthDataset, TokenizedPromptDataset
 from axolotl.prompt_strategies import load
+from axolotl.prompt_strategies.conversations import ConversationPromptTokenizingStrategy
 from axolotl.prompt_tokenizers import (
     AlpacaMultipleChoicePromptTokenizingStrategy,
     AlpacaPromptTokenizingStrategy,
@@ -239,6 +241,15 @@ def load_tokenized_prepared_datasets(
                 datasets.append(ds)
             elif isinstance(d.type, DictDefault):
                 ds_strategy = load("user_defined", tokenizer, cfg, d.type.to_dict())
+                ds_wrapper = TokenizedPromptDataset(ds_strategy, ds)
+                datasets.append(ds_wrapper)
+            elif d_base_type == "conversation":
+                ds_strategy = ConversationPromptTokenizingStrategy(
+                    get_conversation_template,
+                    tokenizer,
+                    cfg.train_on_inputs,
+                    cfg.sequence_len,
+                )
                 ds_wrapper = TokenizedPromptDataset(ds_strategy, ds)
                 datasets.append(ds_wrapper)
             elif ds_strategy := load(d.type, tokenizer, cfg, d):

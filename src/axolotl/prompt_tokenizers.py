@@ -72,7 +72,7 @@ class PromptTokenizingStrategy(abc.ABC):
             truncation=True,
             max_length=self.sequence_len,
             padding=False,
-            return_tensors=None,
+            return_tensors="pt",
         )
         if len(result["input_ids"]) == 0:
             LOG.warning("Tokenizer result is empty. You may want to audit your dataset")
