@@ -733,9 +733,19 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         trainer_cls = OneCycleLRSchedulerTrainer
     elif cfg.relora_steps:
         trainer_cls = ReLoRATrainer
+
+    def compute_metrics(eval_pred):
+        predictions = eval_pred.predictions
+        labels = eval_pred.label_ids
+        predicted_tokens = np.argmax(predictions, axis=-1)
+        # Replace -100 in the labels as we can't decode them.
+        labels[labels == -100] = tokenizer.pad_token_id
+        # Replace -100 in the predictions as well.
+        predictions[predictions == -100] = tokenizer.pad_token_id
+        # compute accuracy
+        accuracy = np.sum(predicted_tokens == labels) / (labels.shape[0] * labels.shape[1])
+        return {"accuracy": accuracy}
     
-    acc_metric = evaluate.load("accuracy")
-    compute_metrics = lambda eval_pred: acc_metric.compute(predictions=eval_pred.predictions, references=eval_pred.label_ids)
     trainer = trainer_cls(
         model=model,
         train_dataset=train_dataset,
